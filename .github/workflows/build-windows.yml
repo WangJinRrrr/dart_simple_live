@@ -1,0 +1,51 @@
+name: build-windows
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.47.x"
+          cache: true
+
+      - name: Restore packages
+        working-directory: simple_live_app
+        run: flutter pub get
+
+      - name: Build Windows
+        working-directory: simple_live_app
+        run: flutter build windows --release
+
+      # 便携版：整个 Release 目录打包成 ZIP
+      - name: Package ZIP
+        shell: pwsh
+        run: |
+          $version = (Get-Content simple_live_app/pubspec.yaml | Where-Object { $_ -match '^version:' }) -replace '^version:\s*', ''
+          $version = $version -replace '\+', '-'
+          $name = "SimpleLive-$version-windows-x64"
+          Compress-Archive -Path "simple_live_app/build/windows/x64/runner/Release/*" -DestinationPath "$name.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-zip
+          path: "SimpleLive-*-windows-x64.zip"
+
+      # 打 tag 时顺便挂到 Release
+      - name: Upload to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: "SimpleLive-*-windows-x64.zip"
