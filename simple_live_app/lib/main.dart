@@ -39,7 +39,6 @@ import 'package:dynamic_color/dynamic_color.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await migrateData();
-  await initWindow();
   MediaKit.ensureInitialized();
   await Hive.initFlutter(
     (!Platform.isAndroid && !Platform.isIOS)
@@ -48,6 +47,8 @@ void main() async {
   );
   //初始化服务
   await initServices();
+  //窗口需要在本地存储初始化之后，才能恢复上次的尺寸
+  await initWindow();
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
   //设置状态栏为透明
   SystemUiOverlayStyle systemUiOverlayStyle = const SystemUiOverlayStyle(
@@ -105,15 +106,70 @@ Future initWindow() async {
     return;
   }
   await windowManager.ensureInitialized();
-  WindowOptions windowOptions = const WindowOptions(
-    minimumSize: Size(280, 280),
+
+  // 恢复上次的窗口尺寸
+  Size? windowSize;
+  var savedSize = LocalStorageService.instance
+      .getValue<String>(LocalStorageService.kWindowSize, "");
+  var splitSize = savedSize.split("x");
+  if (splitSize.length == 2) {
+    var width = double.tryParse(splitSize[0])?.clamp(280.0, 10000.0);
+    var height = double.tryParse(splitSize[1])?.clamp(280.0, 10000.0);
+    if (width != null && height != null) {
+      windowSize = Size(width, height);
+    }
+  }
+
+  WindowOptions windowOptions = WindowOptions(
+    minimumSize: const Size(280, 280),
     center: true,
+    size: windowSize,
     title: "Simple Live",
   );
   windowManager.waitUntilReadyToShow(windowOptions, () async {
     await windowManager.show();
     await windowManager.focus();
+    windowManager.addListener(windowBoundsKeeper);
   });
+}
+
+/// 记录窗口尺寸，下次启动时恢复
+final WindowBoundsKeeper windowBoundsKeeper = WindowBoundsKeeper();
+
+class WindowBoundsKeeper with WindowListener {
+  Timer? _timer;
+
+  @override
+  void onWindowResize() {
+    _timer?.cancel();
+    _timer = Timer(const Duration(milliseconds: 800), () async {
+      try {
+        if (await windowManager.isFullScreen() ||
+            await windowManager.isMaximized()) {
+          return;
+        }
+        var size = await windowManager.getSize();
+        LocalStorageService.instance.setValue(
+          LocalStorageService.kWindowSize,
+          "${size.width.toInt()}x${size.height.toInt()}",
+        );
+      } catch (e) {
+        Log.logPrint(e);
+      }
+    });
+  }
+}
+
+/// 让系统标题栏跟随主题（Win11 深色标题栏）
+Brightness? _lastWindowBrightness;
+void syncWindowBrightness(Brightness brightness) {
+  if (!Platform.isWindows || _lastWindowBrightness == brightness) {
+    return;
+  }
+  _lastWindowBrightness = brightness;
+  windowManager.setBrightness(brightness).catchError(
+    (e) => Log.logPrint(e),
+  );
 }
 
 Future initServices() async {
@@ -190,8 +246,8 @@ class MyApp extends StatelessWidget {
       }
       return GetMaterialApp(
         title: "Simple Live",
-        theme: AppStyle.lightTheme.copyWith(colorScheme: lightColorScheme),
-        darkTheme: AppStyle.darkTheme.copyWith(colorScheme: darkColorScheme),
+        theme: AppStyle.themeFor(lightColorScheme),
+        darkTheme: AppStyle.themeFor(darkColorScheme),
         themeMode:
             ThemeMode.values[Get.find<AppSettingsController>().themeMode.value],
         initialRoute: RoutePath.kIndex,
@@ -216,6 +272,9 @@ class MyApp extends StatelessWidget {
           loadingBuilder: ((msg) => const AppLoaddingWidget()),
           //字体大小不跟随系统变化
           builder: (context, child) {
+            // 系统标题栏跟随主题
+            syncWindowBrightness(Theme.of(context).brightness);
+
             // Fix for HyperOS windowed-mode Flutter bug:
             // - Values > 50 indicate the bug (windowed mode on HyperOS)
             // - Values == 0 are valid for fullscreen/immersive mode and must NOT be treated as abnormal

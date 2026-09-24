@@ -1,7 +1,9 @@
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:floating/floating.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'package:lottie/lottie.dart';
 import 'package:media_kit_video/media_kit_video.dart';
@@ -27,6 +29,9 @@ import 'package:simple_live_core/simple_live_core.dart';
 
 class LiveRoomPage extends GetView<LiveRoomController> {
   const LiveRoomPage({Key? key}) : super(key: key);
+
+  /// 悬浮面板宽度
+  static const double panelWidth = 340;
 
   @override
   Widget build(BuildContext context) {
@@ -86,6 +91,14 @@ class LiveRoomPage extends GetView<LiveRoomController> {
             ),
           );
         }
+        if (controller.smallWindowState.value) {
+          // 画中画（小窗）：聊天与画面并排，不遮挡
+          return buildSmallWindowUI(context);
+        }
+        if (controller.immersiveMode) {
+          // 桌面端：画面铺满窗口，聊天/资料/操作都收进可唤出的悬浮面板
+          return buildImmersiveUI(context);
+        }
         if (controller.fullScreenState.value) {
           return PopScope(
             canPop: false,
@@ -108,6 +121,270 @@ class LiveRoomPage extends GetView<LiveRoomController> {
       floating: controller.pip,
       childWhenDisabled: page,
       childWhenEnabled: buildMediaPlayer(),
+    );
+  }
+
+  /// 面板相关快捷键（窗口模式和画中画通用）
+  Widget withPanelShortcuts(Widget child) {
+    return CallbackShortcuts(
+      bindings: {
+        // C 键：唤出并固定 / 收起聊天面板
+        const SingleActivator(LogicalKeyboardKey.keyC): controller.togglePanel,
+      },
+      child: Focus(
+        autofocus: true,
+        child: child,
+      ),
+    );
+  }
+
+  /// 画中画（小窗）模式：画面与聊天并排，聊天隐藏时窗口宽度自动收回
+  Widget buildSmallWindowUI(BuildContext context) {
+    return withPanelShortcuts(
+      Scaffold(
+        backgroundColor: Colors.black,
+        body: Obx(
+          () => Row(
+            children: [
+              Expanded(
+                child: Stack(
+                  children: [
+                    Positioned.fill(child: buildMediaPlayer()),
+                    Align(
+                      alignment: Alignment.topRight,
+                      child: buildPanelEntryButton(context),
+                    ),
+                  ],
+                ),
+              ),
+              if (controller.showPanelState.value)
+                SizedBox(
+                  width: LiveRoomController.smallWindowChatWidth,
+                  child: buildFloatingPanel(context, docked: true),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 桌面端沉浸式布局：视频铺满整个窗口，其余内容都是可唤出的浮层
+  Widget buildImmersiveUI(BuildContext context) {
+    return withPanelShortcuts(
+      Scaffold(
+        backgroundColor: Colors.black,
+        body: LayoutBuilder(
+          builder: (context, constraints) {
+            // 窗口很窄时不要让面板比窗口还宽
+            var width = constraints.maxWidth < panelWidth + 48
+                ? constraints.maxWidth - 24
+                : panelWidth;
+            return Stack(
+              children: [
+                // 画面铺满窗口
+                Positioned.fill(child: buildMediaPlayer()),
+
+                // 顶部信息条（窗口模式下才需要，全屏时播放器自带顶栏）
+                if (!controller.fullScreenState.value)
+                  Align(
+                    alignment: Alignment.topLeft,
+                    child: Obx(
+                      () => AnimatedOpacity(
+                        duration: const Duration(milliseconds: 200),
+                        opacity: controller.showControlsState.value ? 1 : 0,
+                        child: IgnorePointer(
+                          ignoring: !controller.showControlsState.value,
+                          child: buildTitleBar(context),
+                        ),
+                      ),
+                    ),
+                  ),
+
+                // 面板隐藏时留一个入口
+                Align(
+                  alignment: Alignment.topRight,
+                  child: buildPanelEntryButton(context),
+                ),
+
+                // 悬浮面板：完全手动开合，没有悬停唤出/自动淡出
+                Obx(
+                  () => AnimatedPositioned(
+                    duration: const Duration(milliseconds: 220),
+                    curve: Curves.easeOutCubic,
+                    top: 12,
+                    bottom: 60,
+                    width: width,
+                    right: controller.showPanelState.value ? 12 : -(width + 32),
+                    child: buildFloatingPanel(context),
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  /// 悬浮面板：窗口模式是半透明玻璃浮层，画中画模式是并排的实心侧栏
+  Widget buildFloatingPanel(BuildContext context, {bool docked = false}) {
+    final colorScheme = Theme.of(context).colorScheme;
+    var content = Container(
+      decoration: BoxDecoration(
+        color: docked
+            ? colorScheme.surfaceContainerHigh
+            : AppStyle.glassColor(context),
+        borderRadius: docked ? null : AppStyle.radius12,
+        border: docked
+            ? Border(left: BorderSide(color: colorScheme.outlineVariant))
+            : Border.fromBorderSide(
+                BorderSide(color: colorScheme.outlineVariant),
+              ),
+      ),
+      child: Column(
+        children: [
+          buildUserProfile(
+            context,
+            glass: true,
+            trailing: buildPanelHideButton(),
+          ),
+          buildMessageArea(),
+        ],
+      ),
+    );
+
+    if (docked) {
+      // 并排显示，没有东西在画面上面，不需要模糊
+      return content;
+    }
+
+    return ClipRRect(
+      borderRadius: AppStyle.radius12,
+      child: BackdropFilter(
+        filter: ui.ImageFilter.blur(sigmaX: 24, sigmaY: 24),
+        child: content,
+      ),
+    );
+  }
+
+  /// 面板上的收起按钮
+  Widget buildPanelHideButton() {
+    return IconButton(
+      tooltip: controller.smallWindowState.value ? "隐藏聊天（窗口收回）" : "隐藏聊天面板",
+      onPressed: controller.hidePanel,
+      icon: const Icon(Icons.chevron_right, size: 18),
+    );
+  }
+
+  /// 顶部信息条：返回、主播、人气、更多
+  Widget buildTitleBar(BuildContext context) {
+    return Container(
+      margin: AppStyle.edgeInsetsA12,
+      padding: AppStyle.edgeInsetsL4.copyWith(right: 4, top: 4, bottom: 4),
+      decoration: BoxDecoration(
+        color: AppStyle.glassColor(context, alpha: 0.6),
+        borderRadius: AppStyle.radius8,
+        border: Border.all(
+          color: Theme.of(context).colorScheme.outlineVariant,
+        ),
+      ),
+      child: Obx(
+        () => Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              tooltip: "返回",
+              onPressed: () {
+                if (controller.smallWindowState.value) {
+                  controller.exitSmallWindow();
+                } else {
+                  Get.back();
+                }
+              },
+              icon: const Icon(Icons.arrow_back, size: 20),
+            ),
+            AppStyle.hGap4,
+            NetImage(
+              controller.detail.value?.userAvatar ?? "",
+              width: 28,
+              height: 28,
+              borderRadius: 14,
+            ),
+            AppStyle.hGap8,
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 360),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    controller.detail.value?.userName ?? "",
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Get.textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  Text(
+                    controller.detail.value?.title ?? "",
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Get.textTheme.bodySmall?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            AppStyle.hGap12,
+            const Icon(
+              Remix.fire_fill,
+              size: 16,
+              color: Colors.orange,
+            ),
+            AppStyle.hGap4,
+            Text(
+              Utils.onlineToString(controller.detail.value?.online ?? 0),
+              style: Get.textTheme.bodySmall,
+            ),
+            AppStyle.hGap4,
+            IconButton(
+              tooltip: "更多",
+              onPressed: showMore,
+              icon: const Icon(Icons.more_horiz, size: 20),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 面板入口按钮（面板隐藏时显示）
+  Widget buildPanelEntryButton(BuildContext context) {
+    return Obx(
+      () => AnimatedOpacity(
+        duration: const Duration(milliseconds: 200),
+        opacity: controller.showPanelState.value ? 0 : 1,
+        child: IgnorePointer(
+          ignoring: controller.showPanelState.value,
+          child: Container(
+            margin: AppStyle.edgeInsetsA12,
+            decoration: BoxDecoration(
+              color: AppStyle.glassColor(context, alpha: 0.6),
+              borderRadius: AppStyle.radius8,
+              border: Border.all(
+                color: Theme.of(context).colorScheme.outlineVariant,
+              ),
+            ),
+            child: IconButton(
+              tooltip: "聊天面板（C 键开合）",
+              onPressed: controller.togglePanel,
+              icon: const Icon(Icons.chat_bubble_outline, size: 20),
+            ),
+          ),
+        ),
+      ),
     );
   }
 
@@ -286,18 +563,24 @@ class LiveRoomPage extends GetView<LiveRoomController> {
     );
   }
 
-  Widget buildUserProfile(BuildContext context) {
+  Widget buildUserProfile(
+    BuildContext context, {
+    bool glass = false,
+    Widget? trailing,
+  }) {
     return Container(
       decoration: BoxDecoration(
-        color: Theme.of(context).cardColor,
-        border: Border(
-          top: BorderSide(
-            color: Colors.grey.withAlpha(25),
-          ),
-          bottom: BorderSide(
-            color: Colors.grey.withAlpha(25),
-          ),
-        ),
+        color: glass ? Colors.transparent : Theme.of(context).cardColor,
+        border: glass
+            ? null
+            : Border(
+                top: BorderSide(
+                  color: Colors.grey.withAlpha(25),
+                ),
+                bottom: BorderSide(
+                  color: Colors.grey.withAlpha(25),
+                ),
+              ),
       ),
       padding: AppStyle.edgeInsetsA8.copyWith(
         left: 12,
@@ -367,6 +650,7 @@ class LiveRoomPage extends GetView<LiveRoomController> {
                 ),
               ],
             ),
+            if (trailing != null) trailing,
           ],
         ),
       ),

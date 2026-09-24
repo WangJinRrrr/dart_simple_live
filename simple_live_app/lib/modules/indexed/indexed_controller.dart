@@ -1,5 +1,6 @@
 import 'package:flutter/widgets.dart';
 
+import 'dart:async';
 import 'package:get/get.dart';
 import 'package:simple_live_app/app/constant.dart';
 import 'package:simple_live_app/app/controller/app_settings_controller.dart';
@@ -17,6 +18,26 @@ class IndexedController extends GetxController {
   RxList<HomePageItem> items = RxList<HomePageItem>([]);
 
   var index = 0.obs;
+
+  /// 桌面端悬浮导航栏是否显示
+  var railVisible = false.obs;
+
+  Timer? _railTimer;
+
+  /// 唤出悬浮导航栏
+  void showRail() {
+    _railTimer?.cancel();
+    railVisible.value = true;
+  }
+
+  /// 鼠标离开后自动收起
+  void hideRailSoon() {
+    _railTimer?.cancel();
+    _railTimer = Timer(
+      const Duration(milliseconds: 900),
+      () => railVisible.value = false,
+    );
+  }
   RxList<Widget> pages = RxList<Widget>([
     const SizedBox(),
     const SizedBox(),
@@ -61,6 +82,12 @@ class IndexedController extends GetxController {
         .map((key) => Constant.allHomePages[key]!)
         .toList();
     setIndex(0);
+    // 启动时先露出导航栏，让用户知道它在哪里，之后自动收起
+    railVisible.value = true;
+    _railTimer = Timer(
+      const Duration(seconds: 2),
+      () => railVisible.value = false,
+    );
     super.onInit();
   }
 
@@ -69,6 +96,12 @@ class IndexedController extends GetxController {
     if (settingsController.firstRun) {
       settingsController.setNoFirstRun();
       await Utils.showStatement();
-    } 
+    }
+  }
+
+  @override
+  void onClose() {
+    _railTimer?.cancel();
+    super.onClose();
   }
 }
