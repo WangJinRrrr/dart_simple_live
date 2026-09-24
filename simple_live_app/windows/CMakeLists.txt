@@ -32,6 +32,13 @@ set(CMAKE_CXX_FLAGS_PROFILE "${CMAKE_CXX_FLAGS_RELEASE}")
 # Use Unicode for all projects.
 add_definitions(-DUNICODE -D_UNICODE)
 
+# MSVC 14.40 起 <experimental/coroutine> 被废弃并直接报错，而 flutter_inappwebview_windows
+# 依赖的旧 CppWinRT 会引用到它；这里放行，否则 VS2022 17.10+ / VS2026 上编不过。
+add_compile_definitions(_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)
+
+# 中文代码页(936)下插件里的 UTF-8 源文件会触发 C4819，而插件模板带 /WX，警告会被当错误。
+add_compile_options(/wd4819)
+
 # Compilation settings that should be applied to most targets.
 #
 # Be cautious about adding new options here, as plugins use this function by
