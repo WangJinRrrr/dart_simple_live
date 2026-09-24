@@ -27,6 +27,7 @@ import 'package:simple_live_app/widgets/follow_user_item.dart';
 import 'package:simple_live_core/simple_live_core.dart';
 import 'package:url_launcher/url_launcher_string.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:window_manager/window_manager.dart';
 
 class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   final Site pSite;
@@ -58,6 +59,68 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
   /// 滚动控制
   final ScrollController scrollController = ScrollController();
+
+  /// 桌面端沉浸模式：聊天面板是否显示。
+  /// 面板没有任何自动行为：只能靠面板上的收起按钮（或 C 键）手动开合。
+  var showPanelState = false.obs;
+
+  /// 是否为桌面端沉浸式布局（画面铺满 + 悬浮面板）
+  bool get immersiveMode => !Platform.isAndroid && !Platform.isIOS;
+
+  /// 开合聊天面板（C 键 / 入口按钮）
+  void togglePanel() {
+    setPanelVisible(!showPanelState.value);
+  }
+
+  /// 收起聊天面板（面板上的收起按钮）
+  void hidePanel() {
+    setPanelVisible(false);
+  }
+
+  /// 面板显示状态统一从这里改，方便画中画模式同步窗口宽度
+  void setPanelVisible(bool visible) {
+    if (showPanelState.value == visible) {
+      return;
+    }
+    showPanelState.value = visible;
+    if (smallWindowState.value) {
+      resizeSmallWindowForPanel();
+    }
+  }
+
+  /// 画中画模式下聊天面板的宽度
+  static const double smallWindowChatWidth = 260;
+
+  /// 画中画模式下切换聊天面板时窗口宽度的变化量
+  static Size smallWindowSizeAfterPanelToggle(
+    Size current,
+    bool panelVisible,
+  ) {
+    var delta = panelVisible ? smallWindowChatWidth : -smallWindowChatWidth;
+    return Size(
+      (current.width + delta).clamp(160.0, 10000.0),
+      current.height,
+    );
+  }
+
+  /// 画中画模式下聊天是并排的，所以窗口宽度要跟着面板显示/隐藏增减
+  Future<void> resizeSmallWindowForPanel() async {
+    try {
+      var size = await windowManager.getSize();
+      await windowManager.setSize(
+        smallWindowSizeAfterPanelToggle(size, showPanelState.value),
+      );
+    } catch (e) {
+      Log.logPrint(e);
+    }
+  }
+
+  /// 进小窗时先只显示画面
+  @override
+  void enterSmallWindow() {
+    hidePanel();
+    super.enterSmallWindow();
+  }
 
   /// 聊天信息
   RxList<LiveMessage> messages = RxList<LiveMessage>();
@@ -316,6 +379,13 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
       getSuperChatMessage();
 
+      // 原生标题栏显示当前直播间，弥补沉浸模式下没有标题栏的问题
+      if (!Platform.isAndroid && !Platform.isIOS) {
+        windowManager.setTitle(
+          "${detail.value!.userName} - ${detail.value!.title}",
+        );
+      }
+
       addHistory();
       // 确认房间关注状态
       followed.value = DBService.instance.getFollowExist("${site.id}_$roomId");
@@ -428,8 +498,8 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       return Media(finalUrl, httpHeaders: playHeaders);
     }).toList();
 
-    // 初始化播放器并设置 ao 参数
-    await initializePlayer();
+    // 初始化播放器并设置播放参数
+    await initializePlayer(mediaUrl: mediaList.first.uri);
 
     await player.open(Playlist(mediaList));
   }
@@ -1059,6 +1129,9 @@ ${error?.stackTrace}''');
 
     liveDanmaku.stop();
     danmakuController = null;
+    if (!Platform.isAndroid && !Platform.isIOS) {
+      windowManager.setTitle("Simple Live");
+    }
     _liveDurationTimer?.cancel(); // 页面关闭时取消定时器
     super.onClose();
   }

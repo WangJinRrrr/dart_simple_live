@@ -74,6 +74,17 @@ class PlaySettingsPage extends GetView<AppSettingsController> {
                 AppStyle.divider,
                 Obx(
                   () => SettingsSwitch(
+                    title: "低延迟模式",
+                    subtitle: "关闭播放器网络缓存，减少直播延迟，网络不佳时可关闭",
+                    value: controller.lowLatency.value,
+                    onChanged: (e) {
+                      controller.setLowLatency(e);
+                    },
+                  ),
+                ),
+                AppStyle.divider,
+                Obx(
+                  () => SettingsSwitch(
                     title: "进入后台自动暂停",
                     value: controller.playerAutoPause.value,
                     onChanged: (e) {

@@ -19,6 +19,7 @@ import 'package:simple_live_app/app/controller/base_controller.dart';
 import 'package:simple_live_app/app/custom_throttle.dart';
 import 'package:simple_live_app/app/log.dart';
 import 'package:simple_live_app/app/utils.dart';
+import 'package:simple_live_app/modules/live_room/player/low_latency.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -36,21 +37,41 @@ mixin PlayerMixin {
     ),
   );
 
-  /// 初始化播放器并设置 ao 参数
-  Future<void> initializePlayer() async {
-    var pp = player.platform as NativePlayer;
+  /// 初始化播放器并设置播放参数
+  /// [mediaUrl] 仅用于判断是否需要追加 HLS 相关的低延迟参数
+  Future<void> initializePlayer({String? mediaUrl}) async {
+    if (player.platform is! NativePlayer) {
+      return;
+    }
+    var nativePlayer = player.platform as NativePlayer;
     // 设置音频输出驱动
     if (AppSettingsController.instance.customPlayerOutput.value) {
-      if (player.platform is NativePlayer) {
-        await (player.platform as dynamic).setProperty(
-          'ao',
-          AppSettingsController.instance.audioOutputDriver.value,
-        );
-      }
+      await nativePlayer.setProperty(
+        'ao',
+        AppSettingsController.instance.audioOutputDriver.value,
+      );
     }
+
+    if (AppSettingsController.instance.lowLatency.value) {
+      await applyLowLatency(nativePlayer, mediaUrl: mediaUrl);
+    }
+
     // media_kit 仓库更新导致的问题，临时解决办法
-    if(Platform.isAndroid){
-      await pp.setProperty('force-seekable', 'yes');
+    if (Platform.isAndroid) {
+      await nativePlayer.setProperty('force-seekable', 'yes');
+    }
+  }
+
+  /// 直播间延迟主要来自播放器缓存：
+  /// media_kit 默认 cache=yes、demuxer-max-bytes=32MB，而 mpv 的 cache-secs
+  /// 默认是“尽可能大”，于是收到多少就堆多少、且从不回追直播边缘，
+  /// 看的时间越长落后越多。这里关闭网络缓存并把预读压到秒级。
+  Future<void> applyLowLatency(
+    NativePlayer nativePlayer, {
+    String? mediaUrl,
+  }) async {
+    for (var entry in lowLatencyProperties(mediaUrl).entries) {
+      await nativePlayer.setProperty(entry.key, entry.value);
     }
   }
 

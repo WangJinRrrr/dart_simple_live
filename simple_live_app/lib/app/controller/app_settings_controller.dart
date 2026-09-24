@@ -80,6 +80,9 @@ class AppSettingsController extends GetxController {
     playerForceHttps.value = LocalStorageService.instance
         .getValue(LocalStorageService.kPlayerForceHttps, false);
 
+    lowLatency.value = LocalStorageService.instance
+        .getValue(LocalStorageService.kPlayerLowLatency, true);
+
     autoFullScreen.value = LocalStorageService.instance
         .getValue(LocalStorageService.kAutoFullScreen, false);
 
@@ -530,5 +533,13 @@ class AppSettingsController extends GetxController {
     playerForceHttps.value = e;
     LocalStorageService.instance
         .setValue(LocalStorageService.kPlayerForceHttps, e);
+  }
+
+  /// 低延迟模式：关闭播放器网络缓存，减少直播间延迟（可能更容易卡顿）
+  var lowLatency = true.obs;
+  void setLowLatency(bool e) {
+    lowLatency.value = e;
+    LocalStorageService.instance
+        .setValue(LocalStorageService.kPlayerLowLatency, e);
   }
 }
