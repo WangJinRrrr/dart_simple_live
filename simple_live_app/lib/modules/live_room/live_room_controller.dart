@@ -60,6 +60,23 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   /// 滚动控制
   final ScrollController scrollController = ScrollController();
 
+  /// 加载会话号。快速切换直播源时（上一个还没加载完就切下一个），
+  /// 旧链路的 HTTP 回调、播放器 open、弹幕连接会比新的晚返回，
+  /// 靠它把过期结果丢掉；否则两条链路会互相覆盖，甚至把播放器卡住。
+  int _loadSession = 0;
+
+  /// 播放器里当前正在的是哪条会话（用来忽略旧会话的播放错误/结束事件）
+  int _mediaSession = 0;
+
+  /// 进房时补拉的历史 SC 的标识，只用于 SC 面板，不在播放器里弹出来
+  final Set<String> scBackfillKeys = <String>{};
+
+  /// 开一条新的加载会话（旧会话的后续步骤会被丢弃）
+  int newLoadSession() => ++_loadSession;
+
+  /// 指定会话是否仍然有效
+  bool isLoadSessionCurrent(int session) => session == _loadSession;
+
   /// 桌面端沉浸模式：聊天面板是否显示。
   /// 面板没有任何自动行为：只能靠面板上的收起按钮（或 C 键）手动开合。
   var showPanelState = false.obs;
@@ -241,8 +258,10 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   void refreshRoom() {
     //messages.clear();
     superChats.clear();
+    scBackfillKeys.clear();
     liveDanmaku.stop();
 
+    // loadData 内部会开新的加载会话，旧链路自动作废
     loadData();
   }
 
@@ -342,42 +361,52 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
   /// 加载直播间信息
   void loadData() async {
+    // 开一条新会话，并把本次加载用的直播源/房间号固定下来：
+    // 切换直播间后，旧链路剩下的步骤全部丢弃
+    final session = newLoadSession();
+    final sessionSite = site;
+    final sessionRoomId = roomId;
     try {
       SmartDialog.showLoading(msg: "");
       loadError.value = false;
       error = null;
       update();
       addSysMsg("正在读取直播间信息");
-      detail.value = await site.liveSite.getRoomDetail(roomId: roomId);
+      var roomDetail =
+          await sessionSite.liveSite.getRoomDetail(roomId: sessionRoomId);
+      if (!isLoadSessionCurrent(session)) {
+        return;
+      }
+      detail.value = roomDetail;
 
-      if (site.id == Constant.kDouyin) {
+      if (sessionSite.id == Constant.kDouyin) {
         // 1.6.0之前收藏的WebRid
         // 1.6.0收藏的RoomID
         // 1.6.0之后改回WebRid
-        if (detail.value!.roomId != roomId) {
-          var oldId = roomId;
+        if (detail.value!.roomId != sessionRoomId) {
+          var oldId = sessionRoomId;
           rxRoomId.value = detail.value!.roomId;
           if (followed.value) {
             // 更新关注列表
-            DBService.instance.deleteFollow("${site.id}_$oldId");
+            DBService.instance.deleteFollow("${sessionSite.id}_$oldId");
             DBService.instance.addFollow(
               FollowUser(
-                id: "${site.id}_$roomId",
-                roomId: roomId,
-                siteId: site.id,
+                id: "${sessionSite.id}_${detail.value!.roomId}",
+                roomId: detail.value!.roomId,
+                siteId: sessionSite.id,
                 userName: detail.value!.userName,
                 face: detail.value!.userAvatar,
                 addTime: DateTime.now(),
               ),
             );
           } else {
-            followed.value =
-                DBService.instance.getFollowExist("${site.id}_$roomId");
+            followed.value = DBService.instance
+                .getFollowExist("${sessionSite.id}_${detail.value!.roomId}");
           }
         }
       }
 
-      getSuperChatMessage();
+      getSuperChatMessage(session: session);
 
       // 原生标题栏显示当前直播间，弥补沉浸模式下没有标题栏的问题
       if (!Platform.isAndroid && !Platform.isIOS) {
@@ -392,7 +421,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       online.value = detail.value!.online;
       liveStatus.value = detail.value!.status || detail.value!.isRecord;
       if (liveStatus.value) {
-        getPlayQualites();
+        getPlayQualites(session: session);
       }
       if (detail.value!.isRecord) {
         addSysMsg("当前主播未开播，正在轮播录像");
@@ -402,30 +431,46 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       liveDanmaku.start(detail.value?.danmakuData);
       startLiveDurationTimer(); // 启动开播时长定时器
     } catch (e) {
+      // 已经切到别的直播间了，这条链路的异常不要盖到新直播间上
+      if (!isLoadSessionCurrent(session)) {
+        return;
+      }
       Log.logPrint(e);
       //SmartDialog.showToast(e.toString());
       loadError.value = true;
       error = e as Error;
     } finally {
-      SmartDialog.dismiss(status: SmartStatus.loading);
+      // 只有当前会话才能关掉加载中弹窗（旧会话关掉会让新会话的加载态一闪而过）
+      if (isLoadSessionCurrent(session)) {
+        SmartDialog.dismiss(status: SmartStatus.loading);
+      }
     }
   }
 
   /// 初始化播放器
-  void getPlayQualites() async {
+  Future<void> getPlayQualites({int? session}) async {
+    final current = session ?? _loadSession;
+    if (!isLoadSessionCurrent(current)) {
+      return;
+    }
     qualites.clear();
     currentQuality = -1;
 
     try {
       var playQualites =
           await site.liveSite.getPlayQualites(detail: detail.value!);
-
+      if (!isLoadSessionCurrent(current)) {
+        return;
+      }
       if (playQualites.isEmpty) {
         SmartDialog.showToast("无法读取播放清晰度");
         return;
       }
       qualites.value = playQualites;
       var qualityLevel = await getQualityLevel();
+      if (!isLoadSessionCurrent(current)) {
+        return;
+      }
       if (qualityLevel == 2) {
         //最高
         currentQuality = 0;
@@ -438,8 +483,11 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
         currentQuality = middle;
       }
 
-      getPlayUrl();
+      getPlayUrl(session: current);
     } catch (e) {
+      if (!isLoadSessionCurrent(current)) {
+        return;
+      }
       Log.logPrint(e);
       SmartDialog.showToast("无法读取播放清晰度");
     }
@@ -459,13 +507,21 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     return qualityLevel;
   }
 
-  void getPlayUrl() async {
+  Future<void> getPlayUrl({int? session}) async {
+    final current = session ?? _loadSession;
+    if (!isLoadSessionCurrent(current)) {
+      return;
+    }
     playUrls.clear();
     currentQualityInfo.value = qualites[currentQuality].quality;
     currentLineInfo.value = "";
     currentLineIndex = -1;
     var playUrl = await site.liveSite
         .getPlayUrls(detail: detail.value!, quality: qualites[currentQuality]);
+    // 取地址期间切了直播间，这份地址不能再用
+    if (!isLoadSessionCurrent(current)) {
+      return;
+    }
     if (playUrl.urls.isEmpty) {
       SmartDialog.showToast("无法读取播放地址");
       return;
@@ -476,7 +532,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     currentLineInfo.value = "线路${currentLineIndex + 1}";
     //重置错误次数
     mediaErrorRetryCount = 0;
-    initPlaylist();
+    initPlaylist(session: current);
   }
 
   void changePlayLine(int index) {
@@ -486,21 +542,45 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     setPlayer();
   }
 
-  void initPlaylist() async {
+  /// 是否强制把 http 换成 https
+  /// 单独抽成 getter 是为了能在测试里避开 AppSettingsController
+  bool get forceHttps => AppSettingsController.instance.playerForceHttps.value;
+
+  Future<void> initPlaylist({int? session}) async {
+    final current = session ?? _loadSession;
+    if (!isLoadSessionCurrent(current)) {
+      return;
+    }
     currentLineInfo.value = "线路${currentLineIndex + 1}";
     errorMsg.value = "";
 
     final mediaList = playUrls.map((url) {
       var finalUrl = url;
-      if (AppSettingsController.instance.playerForceHttps.value) {
+      if (forceHttps) {
         finalUrl = finalUrl.replaceAll("http://", "https://");
       }
       return Media(finalUrl, httpHeaders: playHeaders);
     }).toList();
 
+    if (mediaList.isEmpty) {
+      return;
+    }
+
+    // 切直播间期间不要碰播放器：旧链路晚到一步的 open 会把新直播间顶掉
+    if (!isLoadSessionCurrent(current)) {
+      return;
+    }
+    _mediaSession = current;
+    await openPlaylist(mediaList);
+  }
+
+  /// 打开播放列表
+  ///
+  /// 单独抽出来是为了能在测试里把真实播放器换成记录调用，
+  /// 方便验证快速切换直播源时旧会话不会去 open。
+  Future<void> openPlaylist(List<Media> mediaList) async {
     // 初始化播放器并设置播放参数
     await initializePlayer(mediaUrl: mediaList.first.uri);
-
     await player.open(Playlist(mediaList));
   }
 
@@ -513,6 +593,10 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
 
   @override
   void mediaEnd() async {
+    // 旧会话的播放结束事件不要影响当前直播间
+    if (_mediaSession != _loadSession) {
+      return;
+    }
     super.mediaEnd();
     if (mediaErrorRetryCount < 2) {
       Log.d("播放结束，尝试第${mediaErrorRetryCount + 1}次刷新");
@@ -540,6 +624,10 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   int mediaErrorRetryCount = 0;
   @override
   void mediaError(String error) async {
+    // 同上：旧会话的错误不重试
+    if (_mediaSession != _loadSession) {
+      return;
+    }
     super.mediaEnd();
     if (mediaErrorRetryCount < 2) {
       Log.d("播放失败，尝试第${mediaErrorRetryCount + 1}次刷新");
@@ -564,12 +652,21 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   }
 
   /// 读取SC
-  void getSuperChatMessage() async {
+  Future<void> getSuperChatMessage({int? session}) async {
+    final current = session ?? _loadSession;
     try {
       var sc =
           await site.liveSite.getSuperChatMessage(roomId: detail.value!.roomId);
+      if (!isLoadSessionCurrent(current)) {
+        return;
+      }
+      // 这里拉回来的是房间已有的 SC，只进 SC 面板，不在播放器里弹（见 scBackfillKeys）
+      scBackfillKeys.addAll(sc.map(superChatKey));
       superChats.addAll(sc);
     } catch (e) {
+      if (!isLoadSessionCurrent(current)) {
+        return;
+      }
       Log.logPrint(e);
       addSysMsg("SC读取失败");
     }
@@ -1044,6 +1141,9 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       return;
     }
 
+    // 先作废还在飞行中的加载链路，免得它把自己的房间/播放地址写到新直播间上
+    newLoadSession();
+
     rxSite.value = site;
     rxRoomId.value = roomId;
 
@@ -1051,6 +1151,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     liveDanmaku.stop();
     messages.clear();
     superChats.clear();
+    scBackfillKeys.clear();
     danmakuController?.clear();
 
     // 重新设置LiveDanmaku

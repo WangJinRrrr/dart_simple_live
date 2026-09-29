@@ -59,7 +59,13 @@ Widget buildFullControls(
             child: Positioned(
               left: 24,
               bottom: 24,
-              child: PlayerSuperChatOverlay(controller: controller),
+              // 按房间给 key：切直播间时重新建 State，不会把上个房间的 SC 卡片留在画面上
+              child: PlayerSuperChatOverlay(
+                key: ValueKey(
+                  "${controller.rxSite.value.id}_${controller.rxRoomId.value}",
+                ),
+                controller: controller,
+              ),
             ),
           ),
         ),
@@ -445,7 +451,13 @@ Widget buildControls(
           child: Positioned(
             left: 24,
             bottom: 24,
-            child: PlayerSuperChatOverlay(controller: controller),
+            // 按房间给 key：切直播间时重新建 State，不会把上个房间的 SC 卡片留在画面上
+            child: PlayerSuperChatOverlay(
+              key: ValueKey(
+                "${controller.rxSite.value.id}_${controller.rxRoomId.value}",
+              ),
+              controller: controller,
+            ),
           ),
         ),
       ),
@@ -961,6 +973,32 @@ class LocalDisplaySC {
   LocalDisplaySC(this.sc, this.expireAt, this.duration);
 }
 
+/// 从 SC 列表里挑出需要在播放器里弹出来的，并把它们标记为已处理。
+///
+/// - 跳过已经处理过的：刷新房间会把同一批 SC 重新拉成新对象，而模型既没有 id
+///   也没有 `==`，只能拿 [superChatKey] 当稳定标识。
+/// - 跳过进房时补拉的历史 SC（[backfillKeys]）：那是房间里已经存在的 SC，
+///   一次性弹出来会糊满整个画面，真正该弹的是弹幕推送过来的新 SC。
+List<LiveSuperChatMessage> takePopupSuperChats({
+  required List<LiveSuperChatMessage> list,
+  required Set<String> handledKeys,
+  required Set<String> backfillKeys,
+}) {
+  var result = <LiveSuperChatMessage>[];
+  for (var sc in list) {
+    var key = superChatKey(sc);
+    if (handledKeys.contains(key)) {
+      continue;
+    }
+    handledKeys.add(key);
+    if (backfillKeys.contains(key)) {
+      continue;
+    }
+    result.add(sc);
+  }
+  return result;
+}
+
 class PlayerSuperChatOverlay extends StatefulWidget {
   final LiveRoomController controller;
   const PlayerSuperChatOverlay({required this.controller, Key? key})
@@ -970,17 +1008,25 @@ class PlayerSuperChatOverlay extends StatefulWidget {
 }
 
 class _PlayerSuperChatOverlayState extends State<PlayerSuperChatOverlay> {
+  /// SC 卡片显示时长（秒）
+  static const int scShowSeconds = 15;
+
   final List<LocalDisplaySC> _displayed = [];
   final Map<LocalDisplaySC, Timer> _timers = {};
+
+  /// 已经处理过的 SC 标识，避免同一条弹两次
+  final Set<String> _handledKeys = <String>{};
+
   late Worker _worker;
 
-  void _addSC(LiveSuperChatMessage sc, {int? customSeconds}) {
-    if (_displayed.any((e) => e.sc == sc)) return;
-    int showSeconds = customSeconds ?? 15;
-    final expireAt = DateTime.now().add(Duration(seconds: showSeconds));
-    final localSC = LocalDisplaySC(sc, expireAt, showSeconds);
+  void _addSC(LiveSuperChatMessage sc) {
+    final localSC = LocalDisplaySC(
+      sc,
+      DateTime.now().add(const Duration(seconds: scShowSeconds)),
+      scShowSeconds,
+    );
     _displayed.add(localSC);
-    _timers[localSC] = Timer(Duration(seconds: showSeconds), () {
+    _timers[localSC] = Timer(const Duration(seconds: scShowSeconds), () {
       setState(() {
         _displayed.remove(localSC);
         _timers.remove(localSC)?.cancel();
@@ -992,27 +1038,19 @@ class _PlayerSuperChatOverlayState extends State<PlayerSuperChatOverlay> {
   @override
   void initState() {
     super.initState();
-    // 首次进房时同步已有SC
-    final now = DateTime.now().millisecondsSinceEpoch;
-    for (var sc in widget.controller.superChats) {
-      int remain = (sc.endTime.millisecondsSinceEpoch - now) ~/ 1000;
-      if (remain > 0) {
-        _addSC(sc, customSeconds: remain < 15 ? remain : 15);
-      }
-    }
-    // 监听SC列表变化
-    _worker =
-        ever<List<LiveSuperChatMessage>>(widget.controller.superChats, (list) {
-      // 新增
-      for (var sc in list) {
-        if (!_displayed.any((e) => e.sc == sc)) {
+    // 只弹监听期间新到的 SC：进房时把已有的 SC 全部弹一遍会直接盖满画面
+    _worker = ever<List<LiveSuperChatMessage>>(
+      widget.controller.superChats,
+      (list) {
+        for (var sc in takePopupSuperChats(
+          list: list,
+          handledKeys: _handledKeys,
+          backfillKeys: widget.controller.scBackfillKeys,
+        )) {
           _addSC(sc);
         }
-      }
-      // 移除
-      _displayed.removeWhere((e) => !list.contains(e.sc));
-      setState(() {});
-    });
+      },
+    );
   }
 
   @override

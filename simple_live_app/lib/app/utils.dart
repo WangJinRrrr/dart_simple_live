@@ -12,6 +12,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:simple_live_app/app/log.dart';
+import 'package:simple_live_core/simple_live_core.dart';
 
 typedef TextValidate = bool Function(String text);
 
@@ -517,4 +518,14 @@ class Utils {
     }
     return "${(size / 1024 / 1024 / 1024).toStringAsFixed(2)} GB";
   }
+}
+
+/// SC 的稳定标识，用于判断“这条 SC 是不是已经处理过了”。
+///
+/// 不能直接用 [LiveSuperChatMessage.toString]：那里是 json.encode，碰到
+/// DateTime 会直接抛异常；模型也没有 id 和 `==`，所以只能自己拼字段。
+/// 同一个人在同一个秒发两条相同内容的 SC 会被当成同一条，可以接受。
+String superChatKey(LiveSuperChatMessage sc) {
+  return '${sc.userName}|${sc.message}|'
+      '${sc.startTime.millisecondsSinceEpoch}';
 }
