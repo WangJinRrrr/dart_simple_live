@@ -71,6 +71,18 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
   /// 进房时补拉的历史 SC 的标识，只用于 SC 面板，不在播放器里弹出来
   final Set<String> scBackfillKeys = <String>{};
 
+  /// 播放器浮层里已经弹过的 SC 标识。
+  /// 记在 controller 上而不是浮层的 State 里：浮层会随“播放器中显示SC”开关、
+  /// 全屏/画中画切换、播放器重建被重新创建，State 里的记录一没，
+  /// 整份 superChats 就会被当成新 SC 一起弹出来。
+  final Set<String> scPoppedKeys = <String>{};
+
+  /// 浮层开始监听时调用：把房间里已有的 SC 全部记为已处理，
+  /// 免得浮层重建后把这份积压当成新 SC 一次弹出来
+  void markExistingSuperChatsPopped() {
+    scPoppedKeys.addAll(superChats.map(superChatKey));
+  }
+
   /// 开一条新的加载会话（旧会话的后续步骤会被丢弃）
   int newLoadSession() => ++_loadSession;
 
@@ -259,6 +271,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     //messages.clear();
     superChats.clear();
     scBackfillKeys.clear();
+    scPoppedKeys.clear();
     liveDanmaku.stop();
 
     // loadData 内部会开新的加载会话，旧链路自动作废
@@ -291,23 +304,13 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
       }
 
       // 关键词屏蔽检查
-      for (var keyword in AppSettingsController.instance.shieldList) {
-        Pattern? pattern;
-        if (Utils.isRegexFormat(keyword)) {
-          String removedSlash = Utils.removeRegexFormat(keyword);
-          try {
-            pattern = RegExp(removedSlash);
-          } catch (e) {
-            // should avoid this during add keyword
-            Log.d("关键词：$keyword 正则格式错误");
-          }
-        } else {
-          pattern = keyword;
-        }
-        if (pattern != null && msg.message.contains(pattern)) {
-          Log.d("关键词：$keyword\n已屏蔽消息内容：${msg.message}");
-          return;
-        }
+      var shielded = matchShieldKeyword(
+        msg.message,
+        AppSettingsController.instance.shieldList,
+      );
+      if (shielded != null) {
+        Log.d("关键词：$shielded\n已屏蔽消息内容：${msg.message}");
+        return;
       }
 
       messages.add(msg);
@@ -333,7 +336,14 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     } else if (msg.type == LiveMessageType.online) {
       online.value = msg.data;
     } else if (msg.type == LiveMessageType.superChat) {
-      superChats.add(msg.data);
+      // 被屏蔽的 SC 直接丢掉：浮层不弹，也不进 SC 面板
+      if (!isSuperChatBlocked(
+        msg.data,
+        blockAll: AppSettingsController.instance.blockSuperChat.value,
+        keywords: AppSettingsController.instance.shieldList,
+      )) {
+        superChats.add(msg.data);
+      }
     }
   }
 
@@ -661,6 +671,15 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
         return;
       }
       // 这里拉回来的是房间已有的 SC，只进 SC 面板，不在播放器里弹（见 scBackfillKeys）
+      sc = sc
+          .where(
+            (e) => !isSuperChatBlocked(
+              e,
+              blockAll: AppSettingsController.instance.blockSuperChat.value,
+              keywords: AppSettingsController.instance.shieldList,
+            ),
+          )
+          .toList();
       scBackfillKeys.addAll(sc.map(superChatKey));
       superChats.addAll(sc);
     } catch (e) {
@@ -1152,6 +1171,7 @@ class LiveRoomController extends PlayerController with WidgetsBindingObserver {
     messages.clear();
     superChats.clear();
     scBackfillKeys.clear();
+    scPoppedKeys.clear();
     danmakuController?.clear();
 
     // 重新设置LiveDanmaku

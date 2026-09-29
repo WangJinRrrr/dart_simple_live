@@ -529,3 +529,38 @@ String superChatKey(LiveSuperChatMessage sc) {
   return '${sc.userName}|${sc.message}|'
       '${sc.startTime.millisecondsSinceEpoch}';
 }
+
+/// 文本是否命中屏蔽词，命中则返回命中的那个词。
+/// 支持 `/正则/` 写法，写错的正则跳过（与弹幕屏蔽行为一致）
+String? matchShieldKeyword(String text, Iterable<String> keywords) {
+  for (var keyword in keywords) {
+    Pattern? pattern;
+    if (Utils.isRegexFormat(keyword)) {
+      try {
+        pattern = RegExp(Utils.removeRegexFormat(keyword));
+      } catch (e) {
+        Log.d("关键词：$keyword 正则格式错误");
+      }
+    } else {
+      pattern = keyword;
+    }
+    if (pattern != null && text.contains(pattern)) {
+      return keyword;
+    }
+  }
+  return null;
+}
+
+/// 这条 SC 该不该屏蔽：开了「屏蔽SC」总开关，或文案/用户名命中屏蔽词。
+/// 用户名也参与匹配，所以填上某个人的昵称就等于屏蔽这个人的所有 SC。
+bool isSuperChatBlocked(
+  LiveSuperChatMessage sc, {
+  required bool blockAll,
+  required Iterable<String> keywords,
+}) {
+  if (blockAll) {
+    return true;
+  }
+  return matchShieldKeyword(sc.message, keywords) != null ||
+      matchShieldKeyword(sc.userName, keywords) != null;
+}

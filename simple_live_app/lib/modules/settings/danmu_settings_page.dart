@@ -59,6 +59,17 @@ class DanmuSettingsView extends GetView<AppSettingsController> {
                 onTap: onTapDanmuShield ??
                     () => Get.toNamed(RoutePath.kSettingsDanmuShield),
               ),
+              AppStyle.divider,
+              Obx(
+                () => SettingsSwitch(
+                  title: "屏蔽SC",
+                  subtitle: "SC 文案或用户名命中屏蔽词就不显示",
+                  value: controller.blockSuperChat.value,
+                  onChanged: (e) {
+                    controller.setBlockSuperChat(e);
+                  },
+                ),
+              ),
             ],
           ),
         ),

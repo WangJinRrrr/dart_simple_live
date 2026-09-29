@@ -1014,9 +1014,6 @@ class _PlayerSuperChatOverlayState extends State<PlayerSuperChatOverlay> {
   final List<LocalDisplaySC> _displayed = [];
   final Map<LocalDisplaySC, Timer> _timers = {};
 
-  /// 已经处理过的 SC 标识，避免同一条弹两次
-  final Set<String> _handledKeys = <String>{};
-
   late Worker _worker;
 
   void _addSC(LiveSuperChatMessage sc) {
@@ -1038,13 +1035,16 @@ class _PlayerSuperChatOverlayState extends State<PlayerSuperChatOverlay> {
   @override
   void initState() {
     super.initState();
+    // 浮层会被重建（“播放器中显示SC”开关、全屏/画中画切换、播放器重建），
+    // 开始监听时先把房间里已有的 SC 封存掉，不然它们会被当成新 SC 一起弹出来
+    widget.controller.markExistingSuperChatsPopped();
     // 只弹监听期间新到的 SC：进房时把已有的 SC 全部弹一遍会直接盖满画面
     _worker = ever<List<LiveSuperChatMessage>>(
       widget.controller.superChats,
       (list) {
         for (var sc in takePopupSuperChats(
           list: list,
-          handledKeys: _handledKeys,
+          handledKeys: widget.controller.scPoppedKeys,
           backfillKeys: widget.controller.scBackfillKeys,
         )) {
           _addSC(sc);

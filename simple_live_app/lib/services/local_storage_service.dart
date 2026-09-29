@@ -114,6 +114,9 @@ class LocalStorageService extends GetxService {
   /// 显示SC
   static const String kPlayerShowSuperChat = "PlayerShowSuperChat";
 
+  /// 屏蔽SC
+  static const String kBlockSuperChat = "BlockSuperChat";
+
   /// 播放器音量
   static const String kPlayerVolume = "PlayerVolume";
 

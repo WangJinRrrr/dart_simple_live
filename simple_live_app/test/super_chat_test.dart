@@ -1,12 +1,15 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:simple_live_app/app/sites.dart';
 import 'package:simple_live_app/app/utils.dart';
+import 'package:simple_live_app/modules/live_room/live_room_controller.dart';
 import 'package:simple_live_app/modules/live_room/player/player_controls.dart';
 import 'package:simple_live_core/simple_live_core.dart';
 
 LiveSuperChatMessage sc(String user, String text, {int second = 0}) {
   return LiveSuperChatMessage(
     userName: user,
-    face: 'face',
+    face: 'https://example.com/face.jpg',
     message: text,
     price: 30,
     startTime: DateTime(2026, 1, 1, 12, 0, second),
@@ -94,5 +97,71 @@ void main() {
       ),
       isEmpty,
     );
+  });
+
+  test('屏蔽SC：总开关 / 关键词命中文案或用户名', () {
+    bool blocked(LiveSuperChatMessage m,
+            {bool all = false, List<String> words = const []}) =>
+        isSuperChatBlocked(m, blockAll: all, keywords: words);
+
+    var m = sc('甲', '来抽奖了');
+    expect(blocked(m), isFalse);
+    expect(blocked(m, all: true), isTrue);
+    expect(blocked(m, words: ['抽奖']), isTrue);
+    expect(blocked(m, words: ['乙']), isFalse);
+    expect(blocked(m, words: [r'/\d+/']), isFalse);
+
+    // 用户名也能当屏蔽词用
+    expect(blocked(sc('张三', '好活'), words: ['张三']), isTrue);
+  });
+
+  test('屏蔽词匹配：正则与普通词', () {
+    expect(matchShieldKeyword('来抽奖了', ['抽奖']), '抽奖');
+    expect(matchShieldKeyword('来抽奖了', ['666']), isNull);
+    expect(matchShieldKeyword('abc123', [r'/\d+/']), r'/\d+/');
+    expect(matchShieldKeyword('abc', [r'/\d+/']), isNull);
+    // 写错的正则不该把整条弹幕误伤，也不该抛异常
+    expect(matchShieldKeyword('abc', ['/[a-']), isNull);
+  });
+
+  testWidgets('浮层被重建后，之前已经收到的 SC 不会再一起弹出来', (tester) async {
+    final controller = LiveRoomController(
+      pSite: Sites.allSites['bilibili']!,
+      pRoomId: '1',
+    );
+    // 房间里已经有两条（进房补拉的 / 早就收到过的）
+    controller.superChats.add(sc('甲', '之前的SC'));
+
+    Future<void> showOverlay() => tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: PlayerSuperChatOverlay(controller: controller),
+            ),
+          ),
+        );
+
+    await showOverlay();
+    await tester.pump();
+    // 已有的一条不该弹
+    expect(find.text('之前的SC'), findsNothing);
+
+    controller.superChats.add(sc('乙', '新SC', second: 30));
+    await tester.pump();
+    expect(find.text('新SC'), findsOneWidget);
+    expect(find.text('之前的SC'), findsNothing);
+
+    // 模拟「播放器中显示SC」开关、全屏/画中画切换导致的浮层重建
+    await tester.pumpWidget(const SizedBox());
+    await showOverlay();
+    controller.superChats.add(sc('丙', '再来一条', second: 60));
+    await tester.pump();
+
+    // 重建后只弹新到的那条，之前的不会跟着一起冒出来
+    expect(find.text('再来一条'), findsOneWidget);
+    expect(find.text('新SC'), findsNothing);
+    expect(find.text('之前的SC'), findsNothing);
+
+    // 卸载浮层，取消它内部的定时器
+    await tester.pumpWidget(const SizedBox());
   });
 }

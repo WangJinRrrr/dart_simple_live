@@ -89,6 +89,9 @@ class AppSettingsController extends GetxController {
     // ignore: invalid_use_of_protected_member
     shieldList.value = LocalStorageService.instance.shieldBox.values.toSet();
 
+    blockSuperChat.value = LocalStorageService.instance
+        .getValue(LocalStorageService.kBlockSuperChat, false);
+
     scaleMode.value = LocalStorageService.instance.getValue(
       LocalStorageService.kPlayerScaleMode,
       0,
@@ -384,6 +387,15 @@ class AppSettingsController extends GetxController {
   }
 
   RxSet<String> shieldList = <String>{}.obs;
+
+  /// 屏蔽SC：SC 文案或用户名命中屏蔽词就不显示（浮层不弹，也不进 SC 面板）
+  var blockSuperChat = false.obs;
+  void setBlockSuperChat(bool e) {
+    blockSuperChat.value = e;
+    LocalStorageService.instance
+        .setValue(LocalStorageService.kBlockSuperChat, e);
+  }
+
   void addShieldList(String e) {
     shieldList.add(e);
     LocalStorageService.instance.shieldBox.put(e, e);
